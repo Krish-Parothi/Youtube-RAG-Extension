@@ -1,35 +1,39 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
+import React from 'react'
+import Header from './components/Header.jsx'
+import ChatPanel from './components/ChatPanel.jsx'
+import QueryInput from './components/QueryInput.jsx'
+import Loader from './components/Loader.jsx'
+import { useBackground } from './hooks/useBackground.js'
 
 function App() {
-  const [count, setCount] = useState(0)
+  const { state, conversation, loading, error, ask, jumpToTime } = useBackground()
 
   return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+    <div className="flex flex-col h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white">
+      <Header title={state.url ? `Video: ${extractTitle(state.url)}` : 'YouTube RAG Reader'} status={state.status} />
+      <div className="flex-1 overflow-hidden flex flex-col">
+        {error && (
+          <div className="bg-red-600/20 border border-red-500 text-red-200 p-4 m-4 rounded-lg text-sm">
+            ⚠️ {error}
+          </div>
+        )}
+        {loading && (
+          <div className="bg-blue-600/20 border border-blue-500 text-blue-200 p-4 m-4 rounded-lg text-sm">
+            ⏳ Searching your video...
+          </div>
+        )}
+        <div className="flex-1 overflow-hidden">
+          <ChatPanel conversation={conversation} onJump={jumpToTime} />
+        </div>
       </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.jsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
+      <QueryInput onSubmit={ask} />
+    </div>
   )
+}
+
+function extractTitle(url) {
+  // Dummy title extraction
+  return 'Sample YouTube Video'
 }
 
 export default App
