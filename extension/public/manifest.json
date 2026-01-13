@@ -1,20 +1,16 @@
 {
   "manifest_version": 3,
   "name": "YouTube RAG Reader",
-  "version": "1.0",
-  "description": "A Chrome extension for reading YouTube transcripts with RAG",
-  "permissions": [
-    "activeTab",
-    "storage",
-    "scripting",
-    "sidePanel"
-  ],
+  "version": "1.0.0",
+  "description": "Ask questions about YouTube videos using RAG",
+  "permissions": ["activeTab", "tabs", "scripting", "storage", "sidePanel"],
+  "host_permissions": ["https://www.youtube.com/*"],
   "background": {
     "service_worker": "services/background.js"
   },
   "content_scripts": [
     {
-      "matches": ["*://*.youtube.com/*"],
+      "matches": ["https://www.youtube.com/*"],
       "js": ["services/content.js"]
     }
   ],
@@ -23,11 +19,5 @@
   },
   "action": {
     "default_title": "YouTube RAG Reader"
-  },
-  "web_accessible_resources": [
-    {
-      "resources": ["*"],
-      "matches": ["*://*.youtube.com/*"]
-    }
-  ]
+  }
 }

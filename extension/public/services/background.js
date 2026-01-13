@@ -1,74 +1,97 @@
-let lastSentUrl = null;
+chrome.action.onClicked.addListener(async (tab) => {
+  if (tab.url.includes('youtube.com')) {
+    await chrome.sidePanel.open({ tabId: tab.id })
+    
+    const videoId = new URL(tab.url).searchParams.get('v')
+    if (videoId) {
+      chrome.storage.local.set({
+        url: tab.url,
+        title: tab.title || 'YouTube Video',
+        status: 'indexing'
+      })
 
-chrome.action.onClicked.addListener((tab) => {
-  console.log('Extension icon clicked on tab:', tab.id, tab.url)
-  chrome.sidePanel.open({ tabId: tab.id });
-  
-  // Immediately trigger indexing for this video
-  if (tab.url && tab.url.includes('youtube.com')) {
-    console.log('YouTube video detected, triggering indexing:', tab.url)
-    chrome.runtime.sendMessage({
-      type: 'URL_CHANGED',
-      url: tab.url
-    });
-  }
-});
-
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'GET_STATE') {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      const url = tabs[0]?.url || '';
-      sendResponse({ url: url, status: 'ready' });
-    });
-    return true; // Keep the message channel open for async response
-  } else if (message.type === 'ASK') {
-    fetch("http://localhost:8000/ask", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ video_id: message.sessionId, question: message.query, session_id: message.sessionId })
-    })
-    .then(res => res.json())
-    .then(data => {
-      console.log('Backend response:', data)
-      // Get current conversation and add assistant response
-      chrome.storage.local.get(['conversation'], (result) => {
-        const conversation = result.conversation || []
-        const assistantMessage = {
-          type: 'assistant',
-          content: data.answer || 'No response',
-          blocks: data.blocks || [],
-          timestamp: Date.now()
-        }
-        const updatedConversation = [...conversation, assistantMessage]
-        chrome.storage.local.set({ 
-          conversation: updatedConversation,
-          lastError: null 
+      fetch('http://localhost:8000/ingest-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: tab.url })
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          chrome.storage.local.set({ status: 'indexed', title: data.title || 'Video' })
         })
-        console.log('Conversation updated:', updatedConversation)
+        .catch(() => {
+          chrome.storage.local.set({ status: 'idle', title: 'Error indexing' })
+        })
+    }
+  }
+})
+
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.type === 'GET_STATE') {
+    chrome.storage.local.get(['url', 'title', 'status'], (result) => {
+      sendResponse({
+        url: result.url || '',
+        title: result.title || '',
+        status: result.status || 'idle'
       })
     })
-    .catch(err => {
-      console.error("Ask error", err)
-      const errorMsg = 'Failed to get answer: ' + err.message
-      chrome.storage.local.set({ lastError: errorMsg })
-    })
-  } else if (message.type === 'URL_CHANGED') {
-    if (message.url === lastSentUrl) {
-      console.log('URL already sent, skipping:', message.url)
-      return
-    }
-    lastSentUrl = message.url;
-    console.log('URL changed, indexing video:', message.url)
-
-    fetch("http://localhost:8000/ingest-url", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: message.url })
-    })
-    .then(res => res.json())
-    .then(data => {
-      console.log('Ingest response:', data)
-    })
-    .catch(err => console.error("Ingest error", err))
+    return true
   }
-});
+
+  if (request.type === 'URL_CHANGE') {
+    const newUrl = request.url
+    const newTitle = request.title
+    chrome.storage.local.set({ url: newUrl, title: newTitle })
+    return true
+  }
+
+  if (request.type === 'GET_CURRENT_TAB_URL') {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0] && tabs[0].url.includes('youtube.com/watch')) {
+        const url = tabs[0].url
+        const title = tabs[0].title
+        chrome.storage.local.set({ url, title })
+        sendResponse({ url, title, status: 'idle' })
+      } else {
+        sendResponse({ url: '', title: '', status: 'idle' })
+      }
+    })
+    return true
+  }
+
+  if (request.type === 'ASK') {
+    chrome.storage.local.get(['url', 'sessions'], (result) => {
+      const url = result.url || ''
+      const videoId = url ? new URL(url).searchParams.get('v') : ''
+      const sessions = result.sessions || {}
+      const session = sessions[videoId] || { conversation: [] }
+
+      fetch('http://localhost:8000/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: request.query, video_id: videoId, session_id: videoId })
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          const updatedConversation = [
+            ...session.conversation,
+            {
+              type: 'assistant',
+              content: data.answer,
+              timestamps: data.references?.map((r) => r.start) || []
+            }
+          ]
+          const updatedSessions = {
+            ...sessions,
+            [videoId]: { ...session, conversation: updatedConversation }
+          }
+          chrome.storage.local.set({ sessions: updatedSessions })
+          sendResponse()
+        })
+        .catch((error) => {
+          sendResponse({ error: 'Failed to get answer' })
+        })
+    })
+    return true
+  }
+})

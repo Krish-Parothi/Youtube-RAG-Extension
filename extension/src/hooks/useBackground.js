@@ -1,139 +1,231 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 
 export function useBackground() {
-  const [state, setState] = useState({ url: '', status: 'idle' })
-  const [conversation, setConversation] = useState([])
+  const [state, setState] = useState({ url: '', title: '', status: 'idle' })
+  const [sessions, setSessions] = useState({})
+  const [activeSessionId, setActiveSessionId] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const prevUrlRef = useRef('')
+
+  const getCurrentTabUrl = useCallback(() => {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type: 'GET_CURRENT_TAB_URL' }, (response) => {
+        if (!chrome.runtime.lastError && response && response.url) {
+          resolve(response)
+        } else {
+          resolve({ url: '', title: '', status: 'idle' })
+        }
+      })
+    })
+  }, [])
+
+  const loadSessions = useCallback((currentState) => {
+    chrome.storage.local.get(['conversation', 'sessions', 'lastError'], (result) => {
+      const currentVideoId = currentState.url ? new URL(currentState.url).searchParams.get('v') : null
+
+      if (result.conversation && !result.sessions) {
+        // Migrate old single conversation to sessions
+        if (currentVideoId) {
+          const migratedSessions = {
+            [currentVideoId]: { conversation: result.conversation, title: currentState.title || 'YouTube Video', url: currentState.url }
+          }
+          setSessions(migratedSessions)
+          setActiveSessionId(currentVideoId)
+          chrome.storage.local.set({ sessions: migratedSessions })
+          chrome.storage.local.remove('conversation')
+        }
+      } else {
+        let updatedSessions = result.sessions || {}
+
+        // Ensure current video has a session
+        if (currentVideoId && !updatedSessions[currentVideoId]) {
+          updatedSessions[currentVideoId] = { conversation: [], title: currentState.title || 'YouTube Video', url: currentState.url }
+          chrome.storage.local.set({ sessions: updatedSessions })
+        }
+
+        setSessions(updatedSessions)
+        if (currentVideoId) {
+          setActiveSessionId(currentVideoId)
+        }
+      }
+      if (result.lastError) setError(result.lastError)
+    })
+  }, [])
 
   useEffect(() => {
-    // Get initial state
+    // Initialize with stored state
     chrome.runtime.sendMessage({ type: 'GET_STATE' }, (response) => {
-      if (chrome.runtime.lastError) {
-        console.error('Error getting state:', chrome.runtime.lastError)
-        return
-      }
-      if (response) {
-        console.log('State received:', response)
+      if (!chrome.runtime.lastError && response) {
         setState(response)
-        
-        // Trigger indexing if on YouTube
-        if (response.url && response.url.includes('youtube.com')) {
-          console.log('Triggering indexing for:', response.url)
-          chrome.runtime.sendMessage({
-            type: 'URL_CHANGED',
-            url: response.url
+        prevUrlRef.current = response.url
+        loadSessions(response)
+      }
+    })
+
+    const storageListener = (changes) => {
+      if (changes.url) {
+        const newUrl = changes.url.newValue
+        setState((prev) => ({ ...prev, url: newUrl }))
+        if (newUrl && newUrl !== prevUrlRef.current) {
+          prevUrlRef.current = newUrl
+          const videoId = new URL(newUrl).searchParams.get('v')
+          if (videoId) {
+            setSessions(prev => {
+              const updated = { ...prev }
+              if (!updated[videoId]) {
+                updated[videoId] = { conversation: [], title: changes.title?.newValue || 'YouTube Video', url: newUrl }
+              }
+              chrome.storage.local.set({ sessions: updated })
+              return updated
+            })
+            setActiveSessionId(videoId)
+          }
+        }
+      }
+
+      if (changes.sessions) {
+        setSessions(changes.sessions.newValue || {})
+      }
+
+      if (changes.status) {
+        setState((prev) => ({ ...prev, status: changes.status.newValue }))
+        if (changes.status.newValue === 'indexing' && activeSessionId) {
+          setSessions(prev => {
+            const updated = {
+              ...prev,
+              [activeSessionId]: { ...prev[activeSessionId], conversation: [] }
+            }
+            chrome.storage.local.set({ sessions: updated })
+            return updated
           })
         }
       }
-    })
 
-    // Load stored conversation on mount
-    chrome.storage.local.get(['conversation', 'lastError'], (result) => {
-      console.log('Loaded from storage:', result)
-      if (result.conversation) {
-        setConversation(result.conversation)
+      if (changes.title) {
+        setState((prev) => ({ ...prev, title: changes.title.newValue }))
+        if (activeSessionId) {
+          setSessions(prev => {
+            const updated = {
+              ...prev,
+              [activeSessionId]: { ...prev[activeSessionId], title: changes.title.newValue }
+            }
+            chrome.storage.local.set({ sessions: updated })
+            return updated
+          })
+        }
       }
-      if (result.lastError) {
-        setError(result.lastError)
-      }
-    })
 
-    // Listen for storage changes
-    const storageListener = (changes, area) => {
-      if (area === 'local') {
-        if (changes.conversation) {
-          console.log('Conversation updated:', changes.conversation.newValue)
-          setConversation(changes.conversation.newValue || [])
-          setLoading(false)
-          setError(null)
-        }
-        if (changes.lastError) {
-          console.log('Error updated:', changes.lastError.newValue)
-          setError(changes.lastError.newValue)
-          setLoading(false)
-        }
+      if (changes.lastError) {
+        setError(changes.lastError.newValue)
+        setLoading(false)
       }
     }
 
     chrome.storage.onChanged.addListener(storageListener)
 
-    return () => chrome.storage.onChanged.removeListener(storageListener)
-  }, [])
+    const statusInterval = setInterval(() => {
+      chrome.storage.local.get(['url', 'status'], (result) => {
+        if (result.url && result.status === 'indexing') {
+          const videoId = new URL(result.url).searchParams.get('v')
+          if (videoId) {
+            fetch(`http://localhost:8000/status/${videoId}`)
+              .then((res) => res.json())
+              .then((data) => {
+                if (data.indexed) {
+                  chrome.storage.local.set({ status: 'indexed' })
+                }
+              })
+              .catch(() => {})
+          }
+        }
+      })
+    }, 2000)
 
-  const extractVideoId = (url) => {
-    const match = url.match(/(?:v=|\/)([0-9A-Za-z_-]{11})/);
-    return match ? match[1] : null;
-  };
+    const urlPollInterval = setInterval(async () => {
+      const tabResponse = await getCurrentTabUrl()
+      if (tabResponse.url && tabResponse.url.includes('youtube.com/watch')) {
+        const videoId = new URL(tabResponse.url).searchParams.get('v')
+        if (videoId) {
+          chrome.storage.local.set({ url: tabResponse.url, title: tabResponse.title, lastError: null })
+        }
+      } else {
+        chrome.storage.local.set({ url: '', title: '', lastError: 'No video URL detected' })
+      }
+    }, 1000)
 
-  const ask = (query) => {
-    const videoId = extractVideoId(state.url)
-    if (!videoId) {
-      const err = 'No valid YouTube video URL detected'
-      console.error(err)
-      setError(err)
-      setLoading(false)
+    return () => {
+      chrome.storage.onChanged.removeListener(storageListener)
+      clearInterval(statusInterval)
+      clearInterval(urlPollInterval)
+    }
+  }, [activeSessionId, loadSessions])
+
+  const ask = useCallback(async (query) => {
+    // Always get fresh current tab URL
+    const tabResponse = await getCurrentTabUrl()
+    if (!tabResponse.url || !tabResponse.url.includes('youtube.com/watch')) {
       return
     }
-    
-    // Check if video is indexed first
-    console.log('Checking indexing status for:', videoId)
-    fetch(`http://localhost:8000/status/${videoId}`)
-      .then(res => res.json())
-      .then(status => {
-        console.log('Video status:', status)
-        
-        if (status.status === 'failed') {
-          setError(`Failed to index video: ${status.video_id}. Does the video have captions?`)
-          setLoading(false)
-          return
-        }
-        
-        if (!status.indexed) {
-          if (status.status === 'indexing') {
-            setError(`Video is being indexed (${status.chunk_count} chunks loaded so far). Please wait...`)
-          } else {
-            setError('Video not indexed yet. Please wait a moment and try again.')
-          }
-          setLoading(false)
-          return
-        }
-        
-        console.log(`✅ Video indexed with ${status.chunk_count} chunks`)
-        
-        // Add user query to conversation immediately
-        const newMessage = { type: 'user', content: query, timestamp: Date.now() }
-        const updatedConversation = [...conversation, newMessage]
-        setConversation(updatedConversation)
-        chrome.storage.local.set({ conversation: updatedConversation })
-        
-        console.log('Asking question for video:', videoId, 'Query:', query)
-        setLoading(true)
-        setError(null)
-        
-        chrome.runtime.sendMessage({ type: 'ASK', query, sessionId: videoId }, (response) => {
-          if (chrome.runtime.lastError) {
-            const err = 'Failed to send query: ' + chrome.runtime.lastError.message
-            console.error(err)
-            setError(err)
-            setLoading(false)
-          }
-        })
-      })
-      .catch(err => {
-        console.error('Status check error:', err)
-        setError('Could not check video status. Make sure backend is running on http://localhost:8000')
-        setLoading(false)
-      })
-  }
 
-  const jumpToTime = (seconds) => {
-    chrome.runtime.sendMessage({ type: 'JUMP_TO_TIME', seconds }, (response) => {
+    const videoId = new URL(tabResponse.url).searchParams.get('v')
+    if (!videoId) {
+      return
+    }
+
+    // Update state and session if needed
+    if (state.url !== tabResponse.url) {
+      setState(tabResponse)
+      prevUrlRef.current = tabResponse.url
+      loadSessions(tabResponse)
+    }
+    if (activeSessionId !== videoId) {
+      setActiveSessionId(videoId)
+    }
+
+    const newMessage = { type: 'user', content: query }
+    const updatedConversation = [...(sessions[videoId]?.conversation || []), newMessage]
+    const updatedSessions = {
+      ...sessions,
+      [videoId]: { ...sessions[videoId], conversation: updatedConversation, url: tabResponse.url, title: tabResponse.title }
+    }
+    setSessions(updatedSessions)
+    chrome.storage.local.set({ sessions: updatedSessions })
+
+    setLoading(true)
+    setError(null)
+
+    chrome.runtime.sendMessage({ type: 'ASK', query }, (response) => {
       if (chrome.runtime.lastError) {
-        console.error('Error jumping to time:', chrome.runtime.lastError)
+        setError(chrome.runtime.lastError.message)
+        setLoading(false)
+      } else if (response && response.error) {
+        setError(response.error)
+        setLoading(false)
+      } else {
+        setLoading(false)
       }
     })
-  }
+  }, [state.url, activeSessionId, sessions, getCurrentTabUrl, loadSessions])
 
-  return { state, conversation, loading, error, ask, jumpToTime }
+  const clearConversation = useCallback(() => {
+    if (activeSessionId) {
+      setSessions(prev => {
+        const updated = {
+          ...prev,
+          [activeSessionId]: { ...prev[activeSessionId], conversation: [] }
+        }
+        chrome.storage.local.set({ sessions: updated })
+        return updated
+      })
+    }
+  }, [activeSessionId])
+
+  const switchSession = useCallback((sessionId) => {
+    setActiveSessionId(sessionId)
+  }, [])
+
+  const conversation = activeSessionId ? sessions[activeSessionId]?.conversation || [] : []
+
+  return { state, conversation, sessions, activeSessionId, loading, error, ask, clearConversation, switchSession }
 }
