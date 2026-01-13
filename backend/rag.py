@@ -28,7 +28,7 @@ DATA_DIR = "./data"
 VECTOR_DIR = os.path.join(DATA_DIR, "faiss")
 os.makedirs(VECTOR_DIR, exist_ok=True)
 
-EMBEDDINGS = HuggingFaceEmbeddings()
+EMBEDDINGS = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 LLM = ChatGroq(
     model="openai/gpt-oss-120b",
     api_key=os.getenv("GROQ_API_KEY"),
@@ -47,7 +47,7 @@ app.add_middleware(
 
 # ---------------- STATE ----------------
 VECTOR_STORES = {}          # video_id -> FAISS
-INDEX_STATUS = {}           # video_id -> indexing | indexed | failed
+INDEX_STATUS = {}           # video_id -> {"status": str, "chunk_count": int}
 LOCKS = {}                  # video_id -> Lock
 MEMORY_POOL = {}            # session_video -> deque
 
@@ -72,7 +72,7 @@ def extract_video_id(url: str) -> str | None:
 
 def fetch_transcript(video_id: str):
     try:
-        return YouTubeTranscriptApi().fetch(video_id, languages=["en"])
+        return YouTubeTranscriptApi().fetch(video_id, languages=["en", "hi"])
     except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable):
         raise HTTPException(404, "Transcript unavailable")
 
@@ -87,61 +87,126 @@ def get_memory(session_id: str, video_id: str):
         MEMORY_POOL[key] = deque(maxlen=MAX_MEMORY_TURNS)
     return MEMORY_POOL[key]
 
+def is_basic_question(question: str) -> bool:
+    basic_keywords = ["hi", "hello", "hey", "how are you", "what's up", "good morning", "good evening", "thanks", "thank you", "bye", "goodbye", "see you", "who are you", "what can you do"]
+    question_lower = question.lower().strip()
+    return any(keyword in question_lower for keyword in basic_keywords) or len(question.split()) < 3
+
 # ---------------- INDEXING ----------------
 def index_video(video_id: str):
     LOCKS.setdefault(video_id, threading.Lock())
 
     with LOCKS[video_id]:
-        if INDEX_STATUS.get(video_id) == "indexed":
+        if INDEX_STATUS.get(video_id, {}).get("status") == "indexed":
             return
 
-        INDEX_STATUS[video_id] = "indexing"
+        INDEX_STATUS[video_id] = {"status": "indexing", "chunk_count": 0}
 
         try:
             transcript = fetch_transcript(video_id)
 
+            # Group captions into chunks of about 10 captions each
+            group_size = 10
+            grouped_texts = []
+            grouped_metadatas = []
+            for i in range(0, len(transcript), group_size):
+                group = transcript[i:i+group_size]
+                text = " ".join(c.text for c in group)
+                metadata = {
+                    "video_id": video_id,
+                    "start": group[0].start,
+                    "duration": sum(c.duration for c in group)
+                }
+                grouped_texts.append(text)
+                grouped_metadatas.append(metadata)
+
             splitter = RecursiveCharacterTextSplitter(
-                chunk_size=800,
-                chunk_overlap=150
+                chunk_size=2000,
+                chunk_overlap=300
             )
 
-            docs = splitter.create_documents(
-                [c.text for c in transcript],
-                metadatas=[{
-                    "video_id": video_id,
-                    "start": c.start,
-                    "duration": c.duration
-                } for c in transcript]
-            )
+            docs = []
+            for text, meta in zip(grouped_texts, grouped_metadatas):
+                doc = splitter.create_documents([text], metadatas=[meta])
+                docs.extend(doc)
+
+            INDEX_STATUS[video_id] = {"status": "indexing", "chunk_count": len(docs)}
 
             store = FAISS.from_documents(docs, EMBEDDINGS)
             store.save_local(get_store_path(video_id))
 
             VECTOR_STORES[video_id] = store
-            INDEX_STATUS[video_id] = "indexed"
+            INDEX_STATUS[video_id] = {"status": "indexed", "chunk_count": len(docs)}
 
         except Exception:
-            INDEX_STATUS[video_id] = "failed"
+            INDEX_STATUS[video_id] = {"status": "failed", "chunk_count": 0}
 
 # ---------------- PROMPT ----------------
 PROMPT = PromptTemplate(
     template="""
-You are a retrieval-grounded assistant for a YouTube video.
+SYSTEM ROLE:
+You are a **YouTube video–grounded assistant**.
+Your primary job is to answer questions using the provided transcript context.
+You may also respond politely to basic conversational messages (e.g., greetings).
 
-Rules:
-- Use ONLY the provided transcript context.
-- Do NOT infer or hallucinate.
-- If answer is absent, say:
+CORE KNOWLEDGE RULES:
+- Use the provided transcript context as the main source of truth.
+- Do NOT invent facts, names, or explanations.
+- Do NOT fabricate timestamps or details not present.
+- If the transcript does not contain the answer, say:
 "I don't know based on this video."
 
-Chat History:
+REASONABLE FLEXIBILITY:
+- If the user says "hi", "hello", or similar greetings, respond briefly and politely.
+- If the user asks about your role or capability, explain it simply (no technical jargon).
+- Do NOT answer factual or technical questions without transcript support.
+- Light conversational responses are allowed, but factual answers must stay grounded.
+
+ANSWERING BEHAVIOR:
+- Be clear, helpful, and readable.
+- When answering from the transcript:
+  - Explain only what is explicitly stated.
+  - Summarize only what appears in the content.
+  - If a "why" or "how" is not explained in the transcript, say you don't know.
+- If multiple viewpoints exist in the transcript, present them neutrally.
+- Preserve technical accuracy when applicable.
+
+CHAT HISTORY USAGE:
+- Chat history is for conversational continuity only.
+- Do NOT use chat history as a factual source.
+- If chat history conflicts with transcript, transcript always takes priority.
+
+TIMESTAMPS:
+- Use timestamps only if they are present in the transcript context.
+- Never invent timestamps.
+- If no timestamps are given, do not mention time.
+
+TONE & STYLE:
+- Natural, calm, and professional.
+- No emojis.
+- No hype.
+- No unnecessary apologies.
+- No speculation.
+- Short paragraphs or bullet points when useful.
+
+FAILURE MODE:
+If the transcript context does NOT contain the information required to answer a factual question, respond exactly with:
+"I don't know based on this video."
+
+--------------------
+CHAT HISTORY:
 {chat_history}
 
-Transcript Context:
+--------------------
+TRANSCRIPT CONTEXT:
 {context}
 
-Question:
+--------------------
+USER QUESTION:
 {question}
+
+--------------------
+FINAL ANSWER:
 """,
     input_variables=["context", "question", "chat_history"]
 )
@@ -157,7 +222,7 @@ def load_existing_indexes():
                 EMBEDDINGS,
                 allow_dangerous_deserialization=True
             )
-            INDEX_STATUS[vid] = "indexed"
+            INDEX_STATUS[vid] = {"status": "indexed", "chunk_count": 0}
         except:
             pass
 
@@ -181,7 +246,17 @@ def ingest(payload: IngestURL):
 @app.post("/ask")
 def ask(payload: Ask):
     if payload.video_id not in VECTOR_STORES:
-        raise HTTPException(400, "Video not indexed yet")
+        # Start indexing if not indexed
+        if payload.video_id not in INDEX_STATUS or INDEX_STATUS[payload.video_id].get("status") != "indexing":
+            threading.Thread(
+                target=index_video,
+                args=(payload.video_id,),
+                daemon=True
+            ).start()
+        return {
+            "answer": "Indexing video, please wait a moment and ask again.",
+            "references": []
+        }
 
     store = VECTOR_STORES[payload.video_id]
     memory = get_memory(payload.session_id or "default", payload.video_id)
@@ -209,6 +284,10 @@ def ask(payload: Ask):
     answer = chain.invoke(payload.question)
     memory.append(f"Q: {payload.question}\nA: {answer}")
 
+    # For basic questions, do not include timestamps
+    if is_basic_question(payload.question):
+        refs = []
+
     return {
         "answer": answer,
         "references": refs
@@ -217,10 +296,7 @@ def ask(payload: Ask):
 
 @app.get("/status/{video_id}")
 def status(video_id: str):
-    return {
-        "video_id": video_id,
-        "status": INDEX_STATUS.get(video_id, "not_indexed")
-    }
+    return INDEX_STATUS.get(video_id, {"status": "not_indexed", "chunk_count": 0})
 
 
 @app.get("/health")
