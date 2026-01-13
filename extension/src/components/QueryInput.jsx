@@ -6,7 +6,7 @@ export default function QueryInput({ onSubmit, disabled, isReady }) {
 
   const handleSubmit = (e) => {
     e.preventDefault()
-    if (query.trim() && isReady) {
+    if (query.trim() && !disabled) {
       onSubmit(query)
       setQuery('')
     }

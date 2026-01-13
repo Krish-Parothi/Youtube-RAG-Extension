@@ -40,7 +40,7 @@ export default function App() {
         <div style={{ flexShrink: 0 }}>
           <Header state={state} onClearChat={clearConversation} />
 
-          {error === 'No video URL detected' && !activeSessionId && (
+          {error && (
             <div style={{
               background: 'linear-gradient(to right, rgba(127, 29, 29, 0.9), rgba(120, 53, 15, 0.9))',
               borderBottom: '1px solid rgba(127, 29, 29, 0.5)',
@@ -64,7 +64,7 @@ export default function App() {
         </div>
 
         <div style={{ flexShrink: 0 }}>
-          <QueryInput onSubmit={ask} disabled={loading} />
+          <QueryInput onSubmit={ask} disabled={loading} isReady={!!state.url && state.url.includes('youtube.com/watch')} />
         </div>
       </div>
     </div>
