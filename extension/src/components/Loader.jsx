@@ -74,7 +74,7 @@ export default function Loader() {
               opacity: 0.8,
               margin: 0
             }}>
-              ✨ Getting answer from video...
+              Getting answer from video...
             </p>
           </div>
 

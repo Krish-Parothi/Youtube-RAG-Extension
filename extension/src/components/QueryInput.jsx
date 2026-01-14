@@ -85,7 +85,7 @@ export default function QueryInput({ onSubmit, disabled, isReady }) {
           onMouseLeave={(e) => !disabled && !query.trim() === false && (e.target.style.boxShadow = '0 20px 25px -5px rgba(37, 99, 235, 0.5)')}
         >
           <span>Send</span>
-          <span>✨</span>
+          
         </button>
       </div>
     </form>
