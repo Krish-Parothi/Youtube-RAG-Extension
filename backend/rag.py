@@ -21,7 +21,6 @@ from youtube_transcript_api._errors import (
     TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 )
 
-# ---------------- INIT ----------------
 load_dotenv()
 
 DATA_DIR = "./data"
@@ -51,7 +50,7 @@ INDEX_STATUS = {}           # video_id -> {"status": str, "chunk_count": int}
 LOCKS = {}                  # video_id -> Lock
 MEMORY_POOL = {}            # session_video -> deque
 
-# ---------------- MODELS ----------------
+# Model Schemas
 class IngestURL(BaseModel):
     url: str
 
@@ -60,7 +59,7 @@ class Ask(BaseModel):
     question: str
     session_id: str | None = None
 
-# ---------------- HELPERS ----------------
+# Helpers
 def extract_video_id(url: str) -> str | None:
     parsed = urlparse(url)
     if "youtube.com" in parsed.netloc:
@@ -141,7 +140,9 @@ def index_video(video_id: str):
         except Exception:
             INDEX_STATUS[video_id] = {"status": "failed", "chunk_count": 0}
 
-# ---------------- PROMPT ----------------
+
+# PROMPT TEMPLATE
+
 PROMPT = PromptTemplate(
     template="""
 SYSTEM ROLE:
