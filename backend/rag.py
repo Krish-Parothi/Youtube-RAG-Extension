@@ -306,3 +306,23 @@ def health():
         "videos": len(VECTOR_STORES),
         "sessions": len(MEMORY_POOL)
     }
+
+
+@app.delete("/delete-session/{video_id}")
+def delete_session(video_id: str):
+    if video_id in VECTOR_STORES:
+        del VECTOR_STORES[video_id]
+    if video_id in INDEX_STATUS:
+        del INDEX_STATUS[video_id]
+    if video_id in LOCKS:
+        del LOCKS[video_id]
+    if video_id in MEMORY_POOL:
+        del MEMORY_POOL[video_id]
+    
+    # Delete the FAISS index file
+    store_path = get_store_path(video_id)
+    if os.path.exists(store_path):
+        import shutil
+        shutil.rmtree(store_path)
+    
+    return {"message": f"Session {video_id} deleted"}
