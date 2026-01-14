@@ -31,7 +31,8 @@ EMBEDDINGS = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 LLM = ChatGroq(
     model="openai/gpt-oss-120b",
     api_key=os.getenv("GROQ_API_KEY"),
-    temperature=0.6
+    temperature=1,
+    max_tokens=2048
 )
 
 MAX_MEMORY_TURNS = 6
