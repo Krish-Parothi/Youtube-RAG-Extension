@@ -1,4 +1,4 @@
-export default function TimestampChip({ timestamp }) {
+export default function TimestampChip({ timestamp, onSeek }) {
   const minutes = Math.floor(timestamp / 60)
   const seconds = Math.floor(timestamp % 60)
   const formatted = `${minutes}:${seconds.toString().padStart(2, '0')}`

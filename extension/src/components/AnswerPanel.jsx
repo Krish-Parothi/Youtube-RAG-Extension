@@ -1,7 +1,7 @@
 import  AnswerBlock  from './AnswerBlock'
 import { useEffect, useRef } from 'react'
 
-export default function AnswerPanel({ conversation }) {
+export default function AnswerPanel({ conversation, onSeek }) {
   const scrollRef = useRef(null)
 
   useEffect(() => {
@@ -65,7 +65,7 @@ export default function AnswerPanel({ conversation }) {
           gap: '4px',
           minHeight: '100%'
         }}>
-          {conversation.map((msg, i) => <AnswerBlock key={i} message={msg} />)}
+          {conversation.map((msg, i) => <AnswerBlock key={i} message={msg} onSeek={onSeek} />)}
         </div>
       )}
       <style>{`

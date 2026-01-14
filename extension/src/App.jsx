@@ -16,8 +16,17 @@ export default function App() {
     error,
     ask,
     clearConversation,
-    switchSession
+    switchSession,
+    deleteSession
   } = useBackground()
+
+  const seekVideo = (timestamp) => {
+    chrome.runtime.sendMessage({ type: 'SEEK_VIDEO', timestamp }, (response) => {
+      if (!response || !response.success) {
+        console.error('Failed to seek video:', response?.error)
+      }
+    })
+  }
 
   return (
     <div style={{
@@ -34,6 +43,7 @@ export default function App() {
         sessions={sessions}
         activeSessionId={activeSessionId}
         onSwitchSession={switchSession}
+        onDeleteSession={deleteSession}
       />
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
@@ -59,7 +69,7 @@ export default function App() {
         </div>
 
         <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
-          <AnswerPanel conversation={conversation} />
+          <AnswerPanel conversation={conversation} onSeek={seekVideo} />
           {loading && <Loader />}
         </div>
 

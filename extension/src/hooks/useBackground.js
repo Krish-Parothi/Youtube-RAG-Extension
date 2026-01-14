@@ -225,7 +225,34 @@ export function useBackground() {
     setActiveSessionId(sessionId)
   }, [])
 
+  const deleteSession = useCallback(async (sessionId) => {
+    try {
+      // Call backend to delete
+      await fetch(`http://localhost:8000/delete-session/${sessionId}`, { method: 'DELETE' })
+    } catch (error) {
+      console.error('Failed to delete session from backend:', error)
+    }
+
+    // Remove from sessions
+    setSessions(prev => {
+      const updated = { ...prev }
+      delete updated[sessionId]
+      chrome.storage.local.set({ sessions: updated })
+      return updated
+    })
+
+    // If deleting active session, switch to another or null
+    if (activeSessionId === sessionId) {
+      const remainingSessions = Object.keys(sessions).filter(id => id !== sessionId)
+      if (remainingSessions.length > 0) {
+        setActiveSessionId(remainingSessions[0])
+      } else {
+        setActiveSessionId(null)
+      }
+    }
+  }, [activeSessionId, sessions])
+
   const conversation = activeSessionId ? sessions[activeSessionId]?.conversation || [] : []
 
-  return { state, conversation, sessions, activeSessionId, loading, error, ask, clearConversation, switchSession }
+  return { state, conversation, sessions, activeSessionId, loading, error, ask, clearConversation, switchSession, deleteSession }
 }

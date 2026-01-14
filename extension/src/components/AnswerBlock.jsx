@@ -1,6 +1,6 @@
 import  TimestampChip  from './TimestampChip'
 
-export default function AnswerBlock({ message }) {
+export default function AnswerBlock({ message, onSeek }) {
   const isUser = message.type === 'user'
 
   if (isUser) {
